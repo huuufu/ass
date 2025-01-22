@@ -1,0 +1,207 @@
+import os
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta
+
+def calculate_offset(live_start, record_start):
+    live_start_time = datetime.fromisoformat(live_start)
+    record_start_time = datetime.fromisoformat(record_start)
+    if record_start_time < live_start_time:
+        record_start_time += timedelta(days=1)
+    offset = (record_start_time - live_start_time).total_seconds()
+    return offset
+
+def adjust_danmu_time_script1(file_path, offset, output_file):
+    tree = ET.parse(file_path)
+    root = tree.getroot()
+    for d_tag in root.findall('.//d'):
+        p = d_tag.attrib['p']
+        p_list = p.split(',')
+        original_time = float(p_list[0])
+        new_time = original_time + offset
+        p_list[0] = str(new_time)
+        d_tag.attrib['p'] = ','.join(p_list)
+    tree.write(output_file)
+
+def merge_files(files, live_start_time, directory):
+    merged_tree = None
+    merged_root = None
+    for file in files:
+        tree = ET.parse(file)
+        root = tree.getroot()
+        if merged_tree is None:
+            merged_tree = tree
+            merged_root = root
+        else:
+            for d_tag in root.findall('.//d'):
+                merged_root.append(d_tag)
+    date_str = live_start_time.split('+')[0].replace('-', '').replace(':', '').replace('T', '')
+    merged_filename = f"{date_str}.xml"
+    merged_tree.write(os.path.join(directory, merged_filename))
+    print(f"Merged files into {merged_filename}")
+
+def process_files_in_directory_script1(directory):
+    live_start_dict = {}
+    for filename in os.listdir(directory):
+        if filename.endswith(".xml") and len(filename) == 10 and filename[:6].isdigit():
+            file_path = os.path.join(directory, filename)
+            if os.path.getsize(file_path) == 0:
+                print(f"Skipping empty file: {filename}")
+                continue
+            tree = ET.parse(file_path)
+            root = tree.getroot()
+            live_start_time = root.find('.//live_start_time').text
+            record_start_time = root.find('.//record_start_time').text
+            offset = calculate_offset(live_start_time, record_start_time)
+            output_file = os.path.join(directory, filename[:6] + "_jiaozhenghou.xml")
+            adjust_danmu_time_script1(file_path, offset, output_file)
+            print(f"Processed {filename} with offset {offset} seconds.")
+            if live_start_time not in live_start_dict:
+                live_start_dict[live_start_time] = []
+            live_start_dict[live_start_time].append(output_file)
+    for live_start_time, files in live_start_dict.items():
+        if len(files) > 1:
+            merge_files(files, live_start_time, directory)
+
+def extract_earliest_record_start_time(live_start, directory):
+    earliest_record_start_time = None
+    for filename in os.listdir(directory):
+        if filename.endswith(".xml") and len(filename) == 18 and filename[:14].isdigit():
+            file_path = os.path.join(directory, filename)
+            tree = ET.parse(file_path)
+            root = tree.getroot()
+            file_live_start_time = root.find('.//live_start_time').text
+            if file_live_start_time == live_start:
+                record_start_time = root.find('.//record_start_time').text
+                if earliest_record_start_time is None or record_start_time < earliest_record_start_time:
+                    earliest_record_start_time = record_start_time
+    return earliest_record_start_time
+
+def adjust_danmu_time_script2(file_path, offset, output_file):
+    tree = ET.parse(file_path)
+    root = tree.getroot()
+    for d_tag in root.findall('.//d'):
+        p = d_tag.attrib['p']
+        p_list = p.split(',')
+        original_time = float(p_list[0])
+        new_time = original_time - offset
+        p_list[0] = str(new_time)
+        d_tag.attrib['p'] = ','.join(p_list)
+    tree.write(output_file)
+
+def sort_danmu_by_time(file_path):
+    tree = ET.parse(file_path)
+    root = tree.getroot()
+    danmu_list = root.findall('.//d')
+    danmu_list.sort(key=lambda d: float(d.attrib['p'].split(',')[0]))
+    for d_tag in root.findall('.//d'):
+        root.remove(d_tag)
+    for d_tag in danmu_list:
+        root.append(d_tag)
+    tree.write(file_path)
+    print(f"Sorted danmu by time in {file_path}")
+
+def check_danmu_times(file_path):
+    tree = ET.parse(file_path)
+    root = tree.getroot()
+    times = []
+    for d_tag in root.findall('.//d'):
+        time_val = float(d_tag.attrib['p'].split(',')[0])
+        times.append(time_val)
+    if not times:
+        return False
+    has_negative = any(t < 0 for t in times)
+    all_at_start = max(times) < 10
+    time_span = max(times) - min(times)
+    span_too_small = time_span < 60
+    return has_negative or all_at_start or span_too_small
+
+def process_files_in_directory_script2(directory):
+    live_start_dict = {}
+    for filename in os.listdir(directory):
+        if filename.endswith(".xml") and len(filename) == 18 and filename[:14].isdigit():
+            file_path = os.path.join(directory, filename)
+            sort_danmu_by_time(file_path)
+            tree = ET.parse(file_path)
+            root = tree.getroot()
+            live_start_time = root.find('.//live_start_time').text
+            record_start_time = root.find('.//record_start_time').text
+            earliest_record_start_time = extract_earliest_record_start_time(live_start_time, directory)
+            if earliest_record_start_time:
+                initial_offset = calculate_offset(live_start_time.split('+')[0], earliest_record_start_time.split('+')[0])
+                output_file = os.path.join(directory, filename.replace('.xml', '_adjusted.xml'))
+                adjust_danmu_time_script2(file_path, 0, output_file)
+                if check_danmu_times(output_file):
+                    print(f"检测到时间异常，尝试使用偏移量调整...")
+                    adjust_danmu_time_script2(file_path, initial_offset, output_file)
+                    if check_danmu_times(output_file):
+                        print(f"警告：{filename} 即使使用偏移量调整后仍有异常")
+                print(f"处理完成 {filename} 偏移量: {initial_offset} 秒")
+                if live_start_time not in live_start_dict:
+                    live_start_dict[live_start_time] = []
+                live_start_dict[live_start_time].append((output_file, record_start_time))
+    return live_start_dict
+
+def merge_and_adjust_files(live_start_dict, directory):
+    merged_tree = None
+    merged_root = None
+    sorted_keys = sorted(live_start_dict.keys())
+    base_record_start_time = None
+    for key in sorted_keys:
+        files = live_start_dict[key]
+        for output_file, record_start_time in files:
+            if merged_tree is None:
+                merged_tree = ET.parse(output_file)
+                merged_root = merged_tree.getroot()
+                base_record_start_time = record_start_time
+            else:
+                offset = calculate_offset(base_record_start_time.split('+')[0], record_start_time.split('+')[0])
+                temp_tree = ET.parse(output_file)
+                temp_root = temp_tree.getroot()
+                for d_tag in temp_root.findall('.//d'):
+                    p = d_tag.attrib['p']
+                    p_list = p.split(',')
+                    original_time = float(p_list[0])
+                    new_time = original_time + offset
+                    p_list[0] = str(new_time)
+                    d_tag.attrib['p'] = ','.join(p_list)
+                    merged_root.append(d_tag)
+    if merged_tree:
+        final_live_start_time = merged_root.find('.//live_start_time').text
+        date_str = final_live_start_time.split('T')[0].replace('-', '')
+        final_filename = f"{date_str}.xml"
+        merged_tree.write(os.path.join(directory, final_filename))
+        print(f"Final merged file saved as {final_filename}")
+        remove_duplicate_lines(os.path.join(directory, final_filename))
+        return final_filename
+
+def remove_duplicate_lines(file_path):
+    tree = ET.parse(file_path)
+    root = tree.getroot()
+    seen = set()
+    duplicates = []
+    for d_tag in root.findall('.//d'):
+        d_text = ET.tostring(d_tag, encoding='unicode')
+        if d_text in seen:
+            duplicates.append(d_tag)
+        else:
+            seen.add(d_text)
+    for d_tag in duplicates:
+        root.remove(d_tag)
+    tree.write(file_path)
+    print(f"Removed duplicate lines from {file_path}")
+
+def run_danmaku_factory(output_filename):
+    if output_filename.endswith('.xml'):
+        output_filename = output_filename[:-4]
+    exe_path = os.path.join(os.getcwd(), "DanmakuFactory1.70_Release_CLI", "DanmakuFactory_REL1.70CLI.exe")
+    command = f'"{exe_path}" -o "{output_filename}.ass" -i "{output_filename}.xml" -r 1600x1280 -s 18.0 -f 5.0 --fontsize 55 -O 255 -L 1 -D 0 --bold TRUE --showusernames FALSE --showmsgbox TRUE --msgboxsize 250x300 --msgboxpos 5x900 --msgboxfontsize 30 --giftminprice 3000.0 --giftmergetolerance 0.0'
+    os.system(command)
+    print(f"Ran DanmakuFactory with file {output_filename}.xml")
+
+if __name__ == "__main__":
+    current_directory = os.getcwd()
+    process_files_in_directory_script1(current_directory)
+    live_start_dict = process_files_in_directory_script2(current_directory)
+    final_filename = merge_and_adjust_files(live_start_dict, current_directory)
+    if final_filename:
+        run_danmaku_factory(final_filename)
