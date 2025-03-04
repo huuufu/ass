@@ -2,6 +2,7 @@ import os
 import re
 import dash
 import numpy as np
+import webbrowser
 from datetime import datetime
 from dash import dcc, html
 from scipy.ndimage import gaussian_filter1d
@@ -87,6 +88,7 @@ def build_figure(times, texts):
             }
         )
     ])
+    webbrowser.open('http://127.0.0.1:8050/')
     app.run_server(debug=False)
 
 if __name__ == "__main__":
